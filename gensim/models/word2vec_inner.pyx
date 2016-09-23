@@ -69,24 +69,31 @@ cdef void our_saxpy_noblas(const int *N, const float *alpha, const float *X, con
 
 cdef void fast_sentence_sg_hs(
     const np.uint32_t *word_point, const np.uint8_t *word_code, const int codelen,
-    REAL_t *syn0, REAL_t *syn1, const int size,
-    const np.uint32_t word2_index, const REAL_t alpha, REAL_t *work, REAL_t *word_locks) nogil:
+    REAL_t *syn0, REAL_t *syn0feature, REAL_t *syn1, const int size,
+    const np.uint32_t word2_index, const np.uint32_t feature2_index, const REAL_t alpha, REAL_t *work, REAL_t *word_locks) nogil:
 
     cdef long long a, b
     cdef long long row1 = word2_index * size, row2
+    cdef long long frow1 = feature2_index * size
     cdef REAL_t f, g
 
     memset(work, 0, size * cython.sizeof(REAL_t))
     for b in range(codelen):
         row2 = word_point[b] * size
         f = our_dot(&size, &syn0[row1], &ONE, &syn1[row2], &ONE)
+        if feature2_index is not 0:
+            f += our_dot(&size, &syn0feature[frow1], &ONE, &syn1[row2], &ONE)
         if f <= -MAX_EXP or f >= MAX_EXP:
             continue
         f = EXP_TABLE[<int>((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]
         g = (1 - word_code[b] - f) * alpha
         our_saxpy(&size, &g, &syn1[row2], &ONE, work, &ONE)
         our_saxpy(&size, &g, &syn0[row1], &ONE, &syn1[row2], &ONE)
+        if feature2_index is not 0:
+            our_saxpy(&size, &g, &syn0feature[frow1], &ONE, &syn1[row2], &ONE)
     our_saxpy(&size, &word_locks[word2_index], work, &ONE, &syn0[row1], &ONE)
+    if feature2_index is not 0:
+        our_saxpy(&size, &word_locks[word2_index], work, &ONE, &syn0feature[frow1], &ONE)
 
 
 # to support random draws from negative-sampling cum_table
@@ -260,6 +267,7 @@ def train_batch_sg(model, sentences, alpha, _work):
     cdef int sample = (model.sample != 0)
 
     cdef REAL_t *syn0 = <REAL_t *>(np.PyArray_DATA(model.syn0))
+    cdef REAL_t *syn0feature = <REAL_t *>(np.PyArray_DATA(model.syn0feature))
     cdef REAL_t *word_locks = <REAL_t *>(np.PyArray_DATA(model.syn0_lockf))
     cdef REAL_t *work
     cdef REAL_t _alpha = alpha
@@ -267,6 +275,7 @@ def train_batch_sg(model, sentences, alpha, _work):
 
     cdef int codelens[MAX_SENTENCE_LEN]
     cdef np.uint32_t indexes[MAX_SENTENCE_LEN]
+    cdef np.uint32_t features[MAX_SENTENCE_LEN]
     cdef np.uint32_t reduced_windows[MAX_SENTENCE_LEN]
     cdef int sentence_idx[MAX_SENTENCE_LEN + 1]
     cdef int window = model.window
@@ -313,6 +322,7 @@ def train_batch_sg(model, sentences, alpha, _work):
             if sample and word.sample_int < random_int32(&next_random):
                 continue
             indexes[effective_words] = word.index
+            features[effective_words] = word.feature
             if hs:
                 codelens[effective_words] = <int>len(word.code)
                 codes[effective_words] = <np.uint8_t *>np.PyArray_DATA(word.code)
@@ -350,7 +360,7 @@ def train_batch_sg(model, sentences, alpha, _work):
                     if j == i:
                         continue
                     if hs:
-                        fast_sentence_sg_hs(points[i], codes[i], codelens[i], syn0, syn1, size, indexes[j], _alpha, work, word_locks)
+                        fast_sentence_sg_hs(points[i], codes[i], codelens[i], syn0, syn0feature, syn1, size, indexes[j], features[j], _alpha, work, word_locks)
                     if negative:
                         next_random = fast_sentence_sg_neg(negative, cum_table, cum_table_len, syn0, syn1neg, size, indexes[i], indexes[j], _alpha, work, next_random, word_locks)
 

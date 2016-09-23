@@ -354,7 +354,8 @@ class Word2Vec(utils.SaveLoad):
             self, sentences=None, size=100, alpha=0.025, window=5, min_count=5,
             max_vocab_size=None, sample=1e-3, seed=1, workers=3, min_alpha=0.0001,
             sg=0, hs=0, negative=5, cbow_mean=1, hashfxn=hash, iter=5, null_word=0,
-            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH):
+            trim_rule=None, sorted_vocab=1, batch_words=MAX_WORDS_IN_BATCH,
+            features=None):
         """
         Initialize the model from an iterable of `sentences`. Each sentence is a
         list of words (unicode strings) that will be used for training.
@@ -423,6 +424,8 @@ class Word2Vec(utils.SaveLoad):
         thus cython routines). Default is 10000. (Larger batches will be passed if individual
         texts are longer than 10000 words, but the standard cython code truncates to that maximum.)
 
+        `features` = map of words into additional features
+
         """
         self.vocab = {}  # mapping from a word (string) to a Vocab object
         self.index2word = []  # map from a word's matrix index (int) to word (string)
@@ -452,6 +455,7 @@ class Word2Vec(utils.SaveLoad):
         self.total_train_time = 0
         self.sorted_vocab = sorted_vocab
         self.batch_words = batch_words
+        self.features = features
 
         if sentences is not None:
             if isinstance(sentences, GeneratorType):
@@ -522,7 +526,34 @@ class Word2Vec(utils.SaveLoad):
         """
         self.scan_vocab(sentences, progress_per=progress_per, trim_rule=trim_rule)  # initial survey
         self.scale_vocab(keep_raw_vocab=keep_raw_vocab, trim_rule=trim_rule)  # trim by min_count & precalculate downsampling
+        self.feature_index() # update vocab with features that they are related to
         self.finalize_vocab()  # build tables & arrays
+
+    def feature_index(self):
+        index2feature = ['']
+        feature2index = {}
+        word2feature = {}
+
+        if self.features is not None:
+            for w in self.features:
+                f = self.features[w]
+                if f in feature2index:
+                    index = feature2index[f]
+                else:
+                    index = len(index2feature)
+                    index2feature.append(f)
+                    feature2index[f] = index
+                word2feature[w] = index
+
+        self.index2feature = index2feature
+        self.feature2index = feature2index
+        self.word2feature = word2feature
+
+        for w in self.vocab:
+            if self.features is not None and w in word2feature:
+                self.vocab[w].feature = word2feature[w]
+            else:
+                self.vocab[w].feature = 0
 
     def scan_vocab(self, sentences, progress_per=10000, trim_rule=None):
         """Do an initial scan of all words appearing in sentences."""
@@ -1011,6 +1042,11 @@ class Word2Vec(utils.SaveLoad):
         for i in xrange(len(self.vocab)):
             # construct deterministic seed from word AND seed argument
             self.syn0[i] = self.seeded_vector(self.index2word[i] + str(self.seed))
+        self.syn0feature = empty((len(self.index2feature), self.vector_size), dtype=REAL)
+        # randomize weights vector by vector, rather than materializing a huge random matrix in RAM at once
+        for i in xrange(len(self.index2feature)):
+            # construct deterministic seed from word AND seed argument
+            self.syn0feature[i] = self.seeded_vector(self.index2feature[i] + str(self.seed))
         if self.hs:
             self.syn1 = zeros((len(self.vocab), self.layer1_size), dtype=REAL)
         if self.negative:
@@ -1048,6 +1084,8 @@ class Word2Vec(utils.SaveLoad):
             # store in sorted order: most frequent words at the top
             for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
                 row = self.syn0[vocab.index]
+                if vocab.feature is not 0:
+                    row += self.syn0feature[vocab.feature]
                 if binary:
                     fout.write(utils.to_utf8(word) + b" " + row.tostring())
                 else:
