@@ -1061,7 +1061,7 @@ class Word2Vec(utils.SaveLoad):
         once = random.RandomState(self.hashfxn(seed_string) & 0xffffffff)
         return (once.rand(self.vector_size) - 0.5) / self.vector_size
 
-    def save_word2vec_format(self, fname, fvocab=None, binary=False):
+    def save_word2vec_format(self, fname, fvocab=None, binary=False, negative=False):
         """
         Store the input-hidden weight matrix in the same format used by the original
         C word2vec-tool, for compatibility.
@@ -1083,9 +1083,12 @@ class Word2Vec(utils.SaveLoad):
             fout.write(utils.to_utf8("%s %s\n" % self.syn0.shape))
             # store in sorted order: most frequent words at the top
             for word, vocab in sorted(iteritems(self.vocab), key=lambda item: -item[1].count):
-                row = self.syn0[vocab.index]
-                if vocab.feature is not 0:
-                    row += self.syn0feature[vocab.feature]
+                if negative is False:
+                    row = self.syn0[vocab.index]
+                    if vocab.feature is not 0:
+                        row += self.syn0feature[vocab.feature]
+                else:
+                    row = self.syn1neg[vocab.index]
                 if binary:
                     fout.write(utils.to_utf8(word) + b" " + row.tostring())
                 else:
